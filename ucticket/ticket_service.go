@@ -4,18 +4,20 @@ import (
 	"log"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Ticket struct {
-	bizTag       string     // 业务名称
-	maxId        int64      // 当前这段ID的最大值，小于maxID直接从内存中返回，大于maxID时需要从数据库中加载下一段
-	cur          int64      // 已经分配过的ID值，刚加载完一段ID时 cur = maxId - step
-	step         int        // ID段的大小，默认50
-	lock         sync.Mutex // 锁保护，确保分配ID时线程安全
-	next         *Ticket    // 下一段可用ID，用于预加载
-	nextLoad     chan bool  // 预加载完成的信号
-	nextLoadLock sync.Mutex // 预加载信号判断的保护锁
+	bizTag       string        // 业务名称
+	maxId        int64         // 当前这段ID的最大值，小于maxID直接从内存中返回，大于maxID时需要从数据库中加载下一段
+	cur          int64         // 已经分配过的ID值，刚加载完一段ID时 cur = maxId - step
+	step         int           // ID段的大小，默认50
+	lock         sync.Mutex    // 锁保护，确保分配ID时线程安全
+	next         *Ticket       // 下一段可用ID，用于预加载
+	nextSignal   chan struct{} // 预加载完成的信号
+	nextLoading  atomic.Bool   // 预加载状态
+	nextLoadLock sync.Mutex    // 预加载信号判断的保护锁
 }
 
 func NewTicket(bizTag string) (*Ticket, error) {
@@ -49,18 +51,16 @@ func (this *Ticket) Next() (int64, error) {
 	if cfg.UsePreload {
 		used := float64(this.cur+int64(this.step)-this.maxId) / float64(this.step)
 		// log.Printf("current biztag used :%.3f", used)
-		if this.next == nil && this.nextLoad == nil && (used >= cfg.PreloadFactor) {
-			// start preload task
-			SafeGo(this.preload)
-			this.nextLoad = make(chan bool)
+		if this.next == nil && this.nextLoading.Load() == false && (used >= cfg.PreloadFactor) {
+			this.StartPreload()
 		}
 	}
 	//use next segement from memory or db
 	if this.maxId < this.cur+int64(1) {
-
-		if this.nextLoad != nil {
+		// if next segement is loading, wait for the result
+		if this.nextLoading.Load() {
 			startTime := time.Now()
-			<-this.nextLoad
+			<-this.nextSignal
 			log.Printf("wait next segment loading cost:%v", time.Since(startTime).String())
 		}
 
@@ -78,13 +78,12 @@ func (this *Ticket) Next() (int64, error) {
 				log.Printf("get segment of biztag:%s error:%s", this.bizTag, err.Error())
 				return 0, err
 			}
-
 			this.maxId = segment.MaxId
 			this.step = segment.Step
 			this.cur = this.maxId - int64(this.step)
 		}
-
 	}
+
 	this.cur++
 	// log.Printf("biztag %s next id :%d", this.bizTag, this.cur)
 	return this.cur, nil
@@ -96,8 +95,6 @@ func (this *Ticket) preload() {
 	segment, err := this.getNextSegment(this.bizTag)
 	if err != nil {
 		log.Printf("get segment of biztag:%s error:%s", this.bizTag, err.Error())
-		this.nextLoad <- false
-		this.nextLoad = nil
 		return
 	}
 
@@ -107,8 +104,6 @@ func (this *Ticket) preload() {
 	this.next.step = segment.Step
 	this.next.cur = segment.MaxId - int64(segment.Step)
 	this.next.next = nil
-	this.nextLoad <- true
-	this.nextLoad = nil
 	log.Printf("load next segement use time: %v, results:%v", time.Since(startTime).String(), this.next)
 }
 
@@ -158,14 +153,18 @@ func (this *Ticket) NextNum(num int64) ([]int64, error) {
 	return ret, nil
 }
 
-func SafeGo(handler func()) {
+func (this *Ticket) StartPreload() {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
 				log.Printf("A panic occurred during handler call: %v", p)
 				log.Printf("Stack info: \n%s", string(debug.Stack()))
 			}
+			this.nextLoading.Store(false)
+			this.nextSignal <- struct{}{}
 		}()
-		handler()
+		this.preload()
 	}()
+	this.nextSignal = make(chan struct{})
+	this.nextLoading.Store(true)
 }
