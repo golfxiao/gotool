@@ -72,6 +72,8 @@ userId, err := BiztagTest.GetGlobalId()
 ……    // 后续业务处理
 ```
 
+使用示例：请参考 [ticket_test.go](./ticket_test.go)
+
 ### 代码文件说明
 - ticket_api.go: 应用方使用的API入口； 
 - ticket_service.go: 主要业务逻辑，包括分段cache和预加载都在这个文件实现； 

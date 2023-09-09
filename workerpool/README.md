@@ -1,4 +1,4 @@
-## workerPool
+## workerpool
 描述：管理工作线程的资源池，适用于需要对并发运行的任务数量作控制的场景。
 
 ### API使用说明：
@@ -10,5 +10,7 @@
     - 在Run函数的基础上，支持对同一个Key重复运行任务的检测，同一时间一个Key只允许运行一个任务； 
     - 如果检测到重复运行，只有第一个调用者能申请到资源来运行，后面的调用者会返回ErrAlreadyRunning错误； 
      
+使用示例：请参考 [workerpool_test.go](./worker_pool_test.go)
+
 ### 设计文档
 请参考：https://blog.csdn.net/xiaojia1001/article/details/132757738
